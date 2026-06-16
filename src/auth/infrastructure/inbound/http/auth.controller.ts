@@ -1,18 +1,17 @@
 import {
   Controller,
   Post,
-  UseGuards,
-  Req,
+  Body,
   HttpCode,
   HttpStatus,
   Inject,
 } from '@nestjs/common';
-import type { Request } from 'express';
-import { GoogleAuthGuard } from '../guards/google-auth.guard';
 import {
   AUTH_USE_CASE_PORT,
   type AuthUseCasePort,
 } from '../../../domain/ports/inbound/auth-use-case.port';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -21,12 +20,14 @@ export class AuthController {
     private readonly authUseCase: AuthUseCasePort,
   ) {}
 
-  @Post('google')
-  @UseGuards(GoogleAuthGuard)
+  @Post('register')
+  async register(@Body() dto: RegisterDto) {
+    return this.authUseCase.register(dto);
+  }
+
+  @Post('login')
   @HttpCode(HttpStatus.OK)
-  async googleLogin(@Req() req: Request) {
-    const authHeader = req.headers.authorization ?? '';
-    const idToken = authHeader.replace('Bearer ', '');
-    return this.authUseCase.googleLogin(idToken);
+  async login(@Body() dto: LoginDto) {
+    return this.authUseCase.login(dto);
   }
 }

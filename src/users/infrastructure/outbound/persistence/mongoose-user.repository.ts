@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { UserEntity } from '../../../domain/entities/user.entity';
 import {
-  FindOrCreateUserInput,
+  CreateUserInput,
   type UserRepositoryPort,
 } from '../../../domain/ports/outbound/user-repository.port';
 import {
@@ -18,8 +18,11 @@ export class MongooseUserRepository implements UserRepositoryPort {
     private readonly userModel: Model<UserDocument>,
   ) {}
 
-  async findByGoogleSub(googleSub: string): Promise<UserEntity | null> {
-    const doc = await this.userModel.findOne({ googleSub }).exec();
+  async findByEmail(email: string): Promise<UserEntity | null> {
+    const doc = await this.userModel
+      .findOne({ email: email.toLowerCase() })
+      .select('+passwordHash')
+      .exec();
     return doc ? this.toEntity(doc) : null;
   }
 
@@ -28,23 +31,9 @@ export class MongooseUserRepository implements UserRepositoryPort {
     return doc ? this.toEntity(doc) : null;
   }
 
-  async create(input: FindOrCreateUserInput): Promise<UserEntity> {
-    const doc = await this.userModel.create({
-      ...input,
-      lastLoginAt: new Date(),
-    });
+  async create(input: CreateUserInput): Promise<UserEntity> {
+    const doc = await this.userModel.create(input);
     return this.toEntity(doc);
-  }
-
-  async updateLastLogin(id: string): Promise<UserEntity> {
-    const doc = await this.userModel
-      .findByIdAndUpdate(
-        id,
-        { lastLoginAt: new Date() },
-        { new: true },
-      )
-      .exec();
-    return this.toEntity(doc!);
   }
 
   async softDelete(id: string): Promise<void> {
@@ -52,17 +41,14 @@ export class MongooseUserRepository implements UserRepositoryPort {
   }
 
   private toEntity(doc: UserDocument): UserEntity {
+    const d = doc as unknown as { createdAt: Date; updatedAt: Date };
     return new UserEntity(
       (doc._id as object).toString(),
-      doc.googleSub,
       doc.email,
-      doc.givenName,
-      doc.familyName,
-      doc.picture,
-      doc.locale,
-      (doc as unknown as { createdAt: Date }).createdAt,
-      (doc as unknown as { updatedAt: Date }).updatedAt,
-      doc.lastLoginAt,
+      doc.name,
+      doc.passwordHash ?? '',
+      d.createdAt,
+      d.updatedAt,
     );
   }
 }

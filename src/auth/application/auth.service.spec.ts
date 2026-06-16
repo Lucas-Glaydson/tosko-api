@@ -1,39 +1,34 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { ConflictException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service';
-import { GOOGLE_TOKEN_VERIFIER_PORT } from '../domain/ports/outbound/google-token-verifier.port';
 import { JWT_GENERATOR_PORT } from '../domain/ports/outbound/jwt-generator.port';
-import { USERS_USE_CASE_PORT } from '../../users/domain/ports/inbound/users-use-case.port';
+import { USER_REPOSITORY_PORT } from '../../users/domain/ports/outbound/user-repository.port';
 import { UserEntity } from '../../users/domain/entities/user.entity';
-import { GoogleUserEntity } from '../domain/entities/google-user.entity';
+import * as bcrypt from 'bcrypt';
 
-const mockGoogleUser = new GoogleUserEntity(
-  'google-sub-123',
-  'joao@gmail.com',
-  'João',
-  'Silva',
-  'https://photo.url',
-  'pt-BR',
-);
+jest.mock('bcrypt');
+const mockedBcrypt = bcrypt as jest.Mocked<typeof bcrypt>;
 
-const mockUser = new UserEntity(
-  'user-id-1',
-  'google-sub-123',
-  'joao@gmail.com',
-  'João',
-  'Silva',
-  'https://photo.url',
-  'pt-BR',
-  new Date('2026-01-01'),
-  new Date('2026-06-01'),
-  new Date('2026-06-11'),
-);
+const makeUser = (overrides: Partial<{
+  id: string; email: string; name: string; passwordHash: string;
+}> = {}): UserEntity =>
+  new UserEntity(
+    overrides.id ?? 'user-id-1',
+    overrides.email ?? 'joao@gmail.com',
+    overrides.name ?? 'João Silva',
+    overrides.passwordHash ?? '$2b$10$hashedpassword',
+    new Date('2026-01-01'),
+    new Date('2026-06-11'),
+  );
 
 describe('AuthService', () => {
   let service: AuthService;
 
-  const mockGoogleTokenVerifier = {
-    verify: jest.fn(),
+  const mockUserRepository = {
+    findByEmail: jest.fn(),
+    findById: jest.fn(),
+    create: jest.fn(),
+    softDelete: jest.fn(),
   };
 
   const mockJwtGenerator = {
@@ -41,19 +36,12 @@ describe('AuthService', () => {
     verify: jest.fn(),
   };
 
-  const mockUsersUseCase = {
-    findOrCreate: jest.fn(),
-    findById: jest.fn(),
-    softDelete: jest.fn(),
-  };
-
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
-        { provide: GOOGLE_TOKEN_VERIFIER_PORT, useValue: mockGoogleTokenVerifier },
+        { provide: USER_REPOSITORY_PORT, useValue: mockUserRepository },
         { provide: JWT_GENERATOR_PORT, useValue: mockJwtGenerator },
-        { provide: USERS_USE_CASE_PORT, useValue: mockUsersUseCase },
       ],
     }).compile();
 
@@ -61,60 +49,69 @@ describe('AuthService', () => {
     jest.clearAllMocks();
   });
 
-  describe('googleLogin', () => {
-    it('deve retornar accessToken e user após login bem-sucedido', async () => {
-      mockGoogleTokenVerifier.verify.mockResolvedValue(mockGoogleUser);
-      mockUsersUseCase.findOrCreate.mockResolvedValue(mockUser);
-      mockJwtGenerator.generate.mockReturnValue('jwt-token-abc');
+  describe('register', () => {
+    const input = { email: 'joao@gmail.com', name: 'João Silva', password: 'secret123' };
 
-      const result = await service.googleLogin('valid-id-token');
+    it('deve registrar novo usuário e retornar accessToken', async () => {
+      mockUserRepository.findByEmail.mockResolvedValue(null);
+      (mockedBcrypt.hash as jest.Mock).mockResolvedValue('$2b$10$hashedpw');
+      const user = makeUser({ passwordHash: '$2b$10$hashedpw' });
+      mockUserRepository.create.mockResolvedValue(user);
+      mockJwtGenerator.generate.mockReturnValue('jwt-token');
 
-      expect(mockGoogleTokenVerifier.verify).toHaveBeenCalledWith('valid-id-token');
-      expect(mockUsersUseCase.findOrCreate).toHaveBeenCalledWith({
-        googleSub: mockGoogleUser.googleSub,
-        email: mockGoogleUser.email,
-        givenName: mockGoogleUser.givenName,
-        familyName: mockGoogleUser.familyName,
-        picture: mockGoogleUser.picture,
-        locale: mockGoogleUser.locale,
+      const result = await service.register(input);
+
+      expect(mockUserRepository.findByEmail).toHaveBeenCalledWith(input.email);
+      expect(mockedBcrypt.hash).toHaveBeenCalledWith(input.password, 10);
+      expect(mockUserRepository.create).toHaveBeenCalledWith({
+        email: input.email.toLowerCase(),
+        name: input.name,
+        passwordHash: '$2b$10$hashedpw',
       });
-      expect(mockJwtGenerator.generate).toHaveBeenCalledWith(mockUser);
-      expect(result).toEqual({ accessToken: 'jwt-token-abc', user: mockUser });
+      expect(result.accessToken).toBe('jwt-token');
+      expect((result.user as UserEntity & { passwordHash?: string }).passwordHash).toBeUndefined();
     });
 
-    it('deve propagar UnauthorizedException quando o token Google é inválido', async () => {
-      mockGoogleTokenVerifier.verify.mockRejectedValue(
-        new UnauthorizedException('Falha na validação do token Google'),
-      );
+    it('deve lançar ConflictException quando e-mail já existe', async () => {
+      mockUserRepository.findByEmail.mockResolvedValue(makeUser());
 
-      await expect(service.googleLogin('invalid-token')).rejects.toThrow(
-        UnauthorizedException,
-      );
-      expect(mockUsersUseCase.findOrCreate).not.toHaveBeenCalled();
-      expect(mockJwtGenerator.generate).not.toHaveBeenCalled();
+      await expect(service.register(input)).rejects.toThrow(ConflictException);
+      await expect(service.register(input)).rejects.toThrow('E-mail já cadastrado');
+      expect(mockUserRepository.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('login', () => {
+    const input = { email: 'joao@gmail.com', password: 'secret123' };
+
+    it('deve retornar accessToken com credenciais válidas', async () => {
+      const user = makeUser();
+      mockUserRepository.findByEmail.mockResolvedValue(user);
+      (mockedBcrypt.compare as jest.Mock).mockResolvedValue(true);
+      mockJwtGenerator.generate.mockReturnValue('jwt-token');
+
+      const result = await service.login(input);
+
+      expect(mockUserRepository.findByEmail).toHaveBeenCalledWith(input.email);
+      expect(mockedBcrypt.compare).toHaveBeenCalledWith(input.password, user.passwordHash);
+      expect(result.accessToken).toBe('jwt-token');
+      expect((result.user as UserEntity & { passwordHash?: string }).passwordHash).toBeUndefined();
     });
 
-    it('deve criar novo usuário quando ainda não existe', async () => {
-      const newUser = new UserEntity(
-        'new-user-id',
-        'new-google-sub',
-        'novo@gmail.com',
-        'Novo',
-        'Usuario',
-        undefined,
-        undefined,
-        new Date(),
-        new Date(),
-        new Date(),
-      );
-      mockGoogleTokenVerifier.verify.mockResolvedValue(mockGoogleUser);
-      mockUsersUseCase.findOrCreate.mockResolvedValue(newUser);
-      mockJwtGenerator.generate.mockReturnValue('new-jwt-token');
+    it('deve lançar UnauthorizedException quando usuário não existe', async () => {
+      mockUserRepository.findByEmail.mockResolvedValue(null);
 
-      const result = await service.googleLogin('valid-id-token');
+      await expect(service.login(input)).rejects.toThrow(UnauthorizedException);
+      await expect(service.login(input)).rejects.toThrow('Credenciais inválidas');
+      expect(mockedBcrypt.compare).not.toHaveBeenCalled();
+    });
 
-      expect(result.accessToken).toBe('new-jwt-token');
-      expect(result.user).toBe(newUser);
+    it('deve lançar UnauthorizedException quando senha está incorreta', async () => {
+      mockUserRepository.findByEmail.mockResolvedValue(makeUser());
+      (mockedBcrypt.compare as jest.Mock).mockResolvedValue(false);
+
+      await expect(service.login(input)).rejects.toThrow(UnauthorizedException);
+      await expect(service.login(input)).rejects.toThrow('Credenciais inválidas');
     });
   });
 });

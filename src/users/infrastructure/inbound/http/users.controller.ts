@@ -25,7 +25,8 @@ export class UsersController {
 
   @Get('me')
   async getProfile(@CurrentUser() user: UserEntity) {
-    return this.usersUseCase.findById(user.id);
+    const { passwordHash: _pw, ...safe } = await this.usersUseCase.findById(user.id);
+    return safe;
   }
 
   @Delete('me')

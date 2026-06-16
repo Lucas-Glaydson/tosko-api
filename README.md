@@ -1,13 +1,13 @@
 # Tosko API
 
-Backend REST API para o app mobile de gerenciamento de tarefas diárias **Tosko**. Suporta autenticação via Google OAuth 2.0, sincronização de tarefas offline-first e controle de concorrência otimista.
+Backend REST API para o app mobile de gerenciamento de tarefas diárias **Tosko**. Suporta autenticação via e-mail/senha com JWT, sincronização de tarefas offline-first e controle de concorrência otimista.
 
 ## Stack
 
 - **NestJS** + **TypeScript** — framework e linguagem
 - **MongoDB** + **Mongoose** — banco de dados
-- **Google Auth Library** — validação de `id_token` do Google Sign-In
-- **JWT** — sessão após login
+- **bcrypt** — hash de senhas
+- **JWT (Passport)** — autenticação e sessão
 - **Pino** — logs estruturados em JSON
 - **Docker Compose** — infraestrutura local
 - **Arquitetura Hexagonal** — Domain / Ports & Adapters
@@ -26,9 +26,6 @@ CORS_ORIGIN=*               # ex: https://meuapp.com
 
 # MongoDB
 MONGODB_URI=mongodb://localhost:27017/tasks_db
-
-# Google OAuth — Google Cloud Console > Credenciais > ID do cliente OAuth 2.0
-GOOGLE_CLIENT_ID=xxxxxxxxxxxx.apps.googleusercontent.com
 
 # JWT
 JWT_SECRET=gere-com-openssl-rand-base64-32   # mínimo 32 caracteres aleatórios
@@ -108,13 +105,60 @@ Erros retornam:
 
 ### Auth
 
-#### `POST /auth/google` — Login com Google
+#### `POST /auth/register` — Cadastro
 
-Valida o `id_token` do Google Sign-In e retorna um JWT da API.
+Cria uma nova conta com e-mail e senha. Retorna o JWT imediatamente.
 
-**Header:**
+**Body:**
+```json
+{
+  "email": "joao@gmail.com",
+  "name": "João Silva",
+  "password": "minimo8chars"
+}
 ```
-Authorization: Bearer <google_id_token>
+
+| Campo      | Obrigatório | Restrições                  |
+|------------|-------------|-----------------------------|
+| `email`    | ✅          | e-mail válido, único        |
+| `name`     | ✅          | 2–100 caracteres            |
+| `password` | ✅          | mínimo 8, máximo 128 chars  |
+
+**Resposta `201`:**
+```json
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id": "664f1a2b3c4d5e6f7a8b9c0d",
+      "email": "joao@gmail.com",
+      "name": "João Silva",
+      "createdAt": "2026-06-15T12:00:00.000Z",
+      "updatedAt": "2026-06-15T12:00:00.000Z"
+    }
+  },
+  "timestamp": "2026-06-15T12:00:00.000Z"
+}
+```
+
+**Resposta `409`** — e-mail já cadastrado:
+```json
+{ "success": false, "statusCode": 409, "message": "E-mail já cadastrado" }
+```
+
+---
+
+#### `POST /auth/login` — Login
+
+Autentica com e-mail e senha. Retorna o JWT.
+
+**Body:**
+```json
+{
+  "email": "joao@gmail.com",
+  "password": "minimo8chars"
+}
 ```
 
 **Resposta `200`:**
@@ -125,17 +169,19 @@ Authorization: Bearer <google_id_token>
     "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "user": {
       "id": "664f1a2b3c4d5e6f7a8b9c0d",
-      "googleSub": "108204452871234567890",
-      "email": "usuario@gmail.com",
-      "givenName": "João",
-      "familyName": "Silva",
-      "picture": "https://lh3.googleusercontent.com/...",
-      "locale": "pt-BR",
-      "lastLoginAt": "2026-06-11T12:00:00.000Z"
+      "email": "joao@gmail.com",
+      "name": "João Silva",
+      "createdAt": "2026-06-15T12:00:00.000Z",
+      "updatedAt": "2026-06-15T12:00:00.000Z"
     }
   },
-  "timestamp": "2026-06-11T12:00:00.000Z"
+  "timestamp": "2026-06-15T12:00:00.000Z"
 }
+```
+
+**Resposta `401`** — credenciais inválidas:
+```json
+{ "success": false, "statusCode": 401, "message": "Credenciais inválidas" }
 ```
 
 ---
@@ -155,12 +201,10 @@ Authorization: Bearer <api_jwt>
   "success": true,
   "data": {
     "id": "664f1a2b3c4d5e6f7a8b9c0d",
-    "email": "usuario@gmail.com",
-    "givenName": "João",
-    "familyName": "Silva",
-    "picture": "https://lh3.googleusercontent.com/...",
-    "locale": "pt-BR",
-    "lastLoginAt": "2026-06-11T12:00:00.000Z"
+    "email": "joao@gmail.com",
+    "name": "João Silva",
+    "createdAt": "2026-06-15T12:00:00.000Z",
+    "updatedAt": "2026-06-15T12:00:00.000Z"
   },
   "timestamp": "..."
 }
@@ -350,15 +394,14 @@ Usado pelo Docker Compose para verificar se o serviço está saudável.
 ```
 App Mobile
     │
-    ├─ 1. Google Sign-In SDK → obtém id_token do Google
+    ├─ 1. POST /auth/register  { email, name, password }
+    │      └─ Resposta: { accessToken, user }
     │
-    ├─ 2. POST /auth/google
-    │      Header: Authorization: Bearer <id_token_google>
-    │
-    ├─ 3. API valida token com Google, cria/atualiza usuário no MongoDB
-    │
-    └─ 4. Resposta: { accessToken: "<jwt_da_api>" }
-           └─ Usar este JWT em todos os demais endpoints
+    └─ 2. POST /auth/login     { email, password }
+           └─ Resposta: { accessToken, user }
+
+Usar o accessToken em todos os endpoints protegidos:
+    Authorization: Bearer <accessToken>
 ```
 
 ---

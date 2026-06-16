@@ -5,26 +5,14 @@ export type UserDocument = HydratedDocument<UserSchemaClass>;
 
 @Schema({ timestamps: true })
 export class UserSchemaClass {
-  @Prop({ required: true, unique: true, index: true })
-  googleSub: string;
-
   @Prop({ required: true, unique: true, lowercase: true, index: true })
   email: string;
 
   @Prop({ required: true, trim: true })
-  givenName: string;
+  name: string;
 
-  @Prop({ required: true, trim: true })
-  familyName: string;
-
-  @Prop({ trim: true })
-  picture?: string;
-
-  @Prop({ trim: true })
-  locale?: string;
-
-  @Prop({ default: Date.now })
-  lastLoginAt: Date;
+  @Prop({ required: true, select: false })
+  passwordHash: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(UserSchemaClass);
