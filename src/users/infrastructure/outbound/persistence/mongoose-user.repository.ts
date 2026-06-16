@@ -1,4 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { UserEntity } from '../../../domain/entities/user.entity';
@@ -11,8 +16,22 @@ import {
   UserDocument,
 } from './schemas/user.schema';
 
+// MongoDB error code for duplicate key violations
+const MONGO_DUPLICATE_KEY_CODE = 11000;
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: number }).code === MONGO_DUPLICATE_KEY_CODE
+  );
+}
+
 @Injectable()
 export class MongooseUserRepository implements UserRepositoryPort {
+  private readonly logger = new Logger(MongooseUserRepository.name);
+
   constructor(
     @InjectModel(UserSchemaClass.name)
     private readonly userModel: Model<UserDocument>,
@@ -32,8 +51,19 @@ export class MongooseUserRepository implements UserRepositoryPort {
   }
 
   async create(input: CreateUserInput): Promise<UserEntity> {
-    const doc = await this.userModel.create(input);
-    return this.toEntity(doc);
+    try {
+      const doc = await this.userModel.create(input);
+      return this.toEntity(doc);
+    } catch (error: unknown) {
+      if (isDuplicateKeyError(error)) {
+        throw new ConflictException('E-mail já cadastrado');
+      }
+      this.logger.error(
+        { err: error },
+        `Failed to create user with email: ${input.email}`,
+      );
+      throw new InternalServerErrorException('Erro ao criar usuário');
+    }
   }
 
   async softDelete(id: string): Promise<void> {
